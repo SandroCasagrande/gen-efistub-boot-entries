@@ -1,0 +1,116 @@
+#!/bin/bash
+#
+# gen-efistub-boot-entries -- Generate EFI boot entries for EFISTUB kernel files
+# 
+# The boot-order is set according to the symlinks maintained by linux-update-symlinks
+# from the debian package linux base if present or sorted by version as a fallback.
+# N.B.: Requires bash version 4.4 or later (c.f. mapfile with delimiter)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+set -eu
+
+
+readonly KERNELS_PATH_PREFIX='/boot/vmlinuz-'
+readonly -a KERNEL_RECENT_SYMLINKS=('/boot/vmlinuz' '/boot/vmlinuz.old')
+readonly SIGNED_EFISTUB_SUBFOLDER='/boot/efi/EFI/Linux'
+# The following variables need additional escaping for usage in sed
+readonly SIGNED_EFISTUB_VFAT_SUBFOLDER='\\EFI\\Linux\\'
+readonly SIGNED_EFISTUB_SUFFIX='-signed\.efi'
+readonly EFI_DISK_FD='/dev/nvme0n1'
+readonly EFI_PART_NUM=1
+
+declare -a -g SIGNED_EFISTUB_KERNEL_NAMES=()
+declare -a -g BOOTNUMS=()
+
+
+# Join an array into a string with specifiable delimiter
+#  $1: delimiter
+#  $2: Array passed as IFS-separated string "${array[@]}"
+function join_arr() {
+  local IFS="$1"
+  shift
+  echo "$*"
+}
+
+
+# Print an error and return unsuccessfully
+#  $1: error message
+function error() {
+  echo "$0: error: $1" >&2
+  return 1
+}
+
+
+# Get all signed EFISTUBS present on the system.
+function find_signed_efistubs() {
+  mapfile -d $'\0' SIGNED_EFISTUB_KERNEL_NAMES < <(find "${SIGNED_EFISTUB_SUBFOLDER}" -type f -name '*'"${SIGNED_EFISTUB_SUFFIX}" -printf '%f\0' | sort -z)
+  if (( "${#SIGNED_EFISTUB_KERNEL_NAMES[@]}" == 0 )); then
+    error "No signed kernels were found. EFI entries are unchanged."
+  fi
+}
+
+
+# Tear down all existing EFI-entries pointing to signed EFISTUBS
+function tear_down_efi_entries() {
+  mapfile -t clear_nums < <(efibootmgr --verbose | sed -n 's/Boot\([^* ]\+\)[* ].*'"${SIGNED_EFISTUB_VFAT_SUBFOLDER}"'\(.*\)'"${SIGNED_EFISTUB_SUFFIX}"'.*/\1/p')
+  for num in "${clear_nums[@]}"; do
+    efibootmgr --quiet --bootnum "${num}" --delete-bootnum
+  done
+  echo "Cleared all existing EFI entries."
+}
+
+
+# Create an entry for all signed EFISTUBS
+function create_efi_entries() {
+  for stub in "${SIGNED_EFISTUB_KERNEL_NAMES[@]}"; do
+    loader="$(echo -e ${SIGNED_EFISTUB_VFAT_SUBFOLDER})${stub}"
+    name=$(echo "${stub}" | sed s/"${SIGNED_EFISTUB_SUFFIX}"'$'//)
+    efibootmgr --quiet --create --disk "${EFI_DISK_FD}" --part ${EFI_PART_NUM} --label "Linux ${name}" --loader "${loader}"
+  done
+  echo "Fresh EFI boot entries for all signed EFISTUBS were created."
+}
+
+
+# Set Boot order using the symlinks for latest and previous kernel images
+function set_boot_order() {
+  for l in "${KERNEL_RECENT_SYMLINKS[@]}"; do
+    if [ -L "$l" ] && [ -e "$l" ]; then
+      kernel=$(readlink -e "$l")
+      name="${kernel#"${KERNELS_PATH_PREFIX}"}"
+      num=$(efibootmgr --verbose | sed -n 's/Boot\([^* ]\+\)[* ].*'"${SIGNED_EFISTUB_VFAT_SUBFOLDER}""${name}""${SIGNED_EFISTUB_SUFFIX}"'.*/\1/p' | head -1)
+      BOOTNUMS+=("${num}")
+    else
+      echo "Symlink ${l} is required for boot order specification but was not found or broken."
+    fi
+  done
+
+  if (( "${#BOOTNUMS[@]}" > 0 )); then
+    boot_order=$(join_arr , "${BOOTNUMS[@]}")
+    sudo efibootmgr --quiet --bootorder "${boot_order}"
+    echo "New EFI boot order was set according to symlinks pointing to latest and previous versions."
+  else
+    echo "New EFI boot order follows alphabetical sorting of kernel versions, starting with the newest version."
+  fi
+}
+
+
+# Main execution body. Does not take any parameters.
+find_signed_efistubs
+tear_down_efi_entries
+create_efi_entries
+set_boot_order
+
+# Print the resulting EFI boot entries
+efibootmgr --verbose

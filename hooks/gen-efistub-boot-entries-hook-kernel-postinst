@@ -1,0 +1,23 @@
+#!/bin/sh
+
+set -e
+PAR=ever
+
+# check for maintainer param
+if [ -n "${DEB_MAINT_PARAMS}" ]; then
+	PAR=none
+	if [ `echo "${DEB_MAINT_PARAMS}" | grep -v abort | grep -c configure` -eq 1 ]
+	then PAR=configure; fi
+fi
+
+# check for configure|upgrade|remove|purge
+case "$PAR" in
+
+  ever|configure)
+    if [ -f /usr/bin/gen-efistub-boot-entries ]; then
+      /usr/bin/gen-efistub-boot-entries >&2
+    fi
+    ;;
+
+esac
+
