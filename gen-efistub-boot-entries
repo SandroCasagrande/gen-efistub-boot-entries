@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-set -eu
+set -euo pipefail
 
 
 readonly KERNELS_PATH_PREFIX='/boot/vmlinuz-'
@@ -28,8 +28,10 @@ readonly SIGNED_EFISTUB_SUBFOLDER='/boot/efi/EFI/Linux'
 # The following variables need additional escaping for usage in sed
 readonly SIGNED_EFISTUB_VFAT_SUBFOLDER='\\EFI\\Linux\\'
 readonly SIGNED_EFISTUB_SUFFIX='-signed\.efi'
-readonly EFI_DISK_FD='/dev/nvme0n1'
-readonly EFI_PART_NUM=1
+# Get EFI location by partition label EFI-SP
+readonly EFI_LOCATION="$(lsblk -ndo PKNAME,MAJ:MIN $(blkid -t LABEL=EFI-SP -o device))"
+readonly EFI_DISK_FD="/dev/${EFI_LOCATION%% *}"  # alternatively set e.g. '/dev/nvme0n1'
+readonly EFI_PART_NUM=${EFI_LOCATION%%*:}  # alternatively set e.g. 1
 
 declare -a -g SIGNED_EFISTUB_KERNEL_NAMES=()
 declare -a -g BOOTNUMS=()
